@@ -1,0 +1,120 @@
+def pine_rma(series, length):
+    alpha = 1 / length
+    rma = np.zeros_like(series)
+    rma[:length] = series[:length].mean()  # Start with SMA for the first 'length' values
+
+    for i in range(length, len(series)):
+        rma[i] = alpha * series[i] + (1 - alpha) * rma[i - 1]
+
+    return pd.Series(rma, index=series.index)
+
+def true_range(df):
+    high_low = df['High'] - df['Low']
+    high_close_prev = np.abs(df['High'] - df['Close'].shift())
+    low_close_prev = np.abs(df['Low'] - df['Close'].shift())
+    tr = pd.concat([high_low, high_close_prev, low_close_prev], axis=1).max(axis=1)
+    return tr
+
+def atr(df, length):
+    tr = true_range(df)
+    return pine_rma(tr, length)
+
+
+def strategy(df):
+
+    # ATR Calculation
+    atr_length = 13
+    multiplier = 5.0
+    # print(df.columns)
+
+    df['atr'] = atr(df, atr_length)
+    # df['atr'] = talib.ATR(df['High'].values, df['Low'].values, df['Close'].values, timeperiod=atr_length)
+
+    # Initialize variables for Renko Logic
+    renko_open = None
+    renko_close = None
+    last_signal = None  # Initialize last_signal to None
+    direction = 0
+
+    # Initialize columns for renko_open and renko_close in df
+    df['renko_open'] = None
+    df['renko_close'] = None
+    # i want to add a column, whenever new renko brick formed it should be 1, otherwise None
+    df['renko_brick'] = None
+
+
+    for index, row in df.iterrows():
+        if renko_close is None:
+            renko_close = row['Close']
+            renko_open = row['Close']
+        else:
+            while True:
+                if direction == 1:
+                    if row['Close'] > renko_close + row['atr'] * multiplier:
+                        renko_open = renko_close
+                        renko_close += row['atr'] * multiplier
+                    elif row['Close'] < renko_open - row['atr'] * multiplier:
+                        direction = -1
+                        renko_open = renko_open
+                        renko_close = renko_open - row['atr'] * multiplier
+                        break
+                    else:
+                        break
+                elif direction == -1:
+                    if row['Close'] < renko_close - row['atr'] * multiplier:
+                        renko_open = renko_close
+                        renko_close -= row['atr'] * multiplier
+                    elif row['Close'] > renko_open + row['atr'] * multiplier:
+                        direction = 1
+                        renko_open = renko_open
+                        renko_close = renko_open + row['atr'] * multiplier
+                        break
+                    else:
+                        break
+                else:
+                    if row['Close'] > renko_close + row['atr'] * multiplier:
+                        direction = 1
+                        renko_open = renko_close
+                        renko_close += row['atr'] * multiplier
+                    elif row['Close'] < renko_close - row['atr'] * multiplier:
+                        direction = -1
+                        renko_open = renko_close
+                        renko_close -= row['atr'] * multiplier
+                    else:
+                        break
+
+        # Update the renko_open and renko_close in the DataFrame
+        df.at[index, 'renko_open'] = renko_open
+        df.at[index, 'renko_close'] = renko_close
+        # if new renko open is not equal to the previous renko open
+        # or new renko close is not equal to the previous renko close
+        # then it is a new renko brick
+        if index > 0:
+            if renko_open != df.at[index-1, 'renko_open'] or renko_close != df.at[index-1, 'renko_close']:
+                df.at[index, 'renko_brick'] = 10000000000000
+        else:
+            df.at[index, 'renko_brick'] = 0
+
+
+        # Update last_signal based on direction
+        if direction == 1 and last_signal != 'Long':
+            last_signal = 'Long'
+        elif direction == -1 and last_signal == 'Long':
+            last_signal = 'Close Long'
+
+
+    # i want to change the df first column from Unix time format to datetime format
+    df['Open Time'] = pd.to_datetime(df['Open Time'], unit='ms')
+
+
+    # save it to csv
+    df.to_csv('BTCUSDT_renko_data.csv', index=False)
+
+    return renko_open, renko_close, last_signal, direction
+
+
+# Replace 'your_file.csv' with the path to your CSV file
+df = pd.read_csv('BTCUSDT_data.csv')
+
+results = strategy(df)
+print(results)
